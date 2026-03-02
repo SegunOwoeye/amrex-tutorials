@@ -44,3 +44,8 @@ EB/Donut/Exec/ls_plt*
 *.visit
 *.pvsm
 
+# AMReX plotfiles
+plt*/
+*_plt/
+
+

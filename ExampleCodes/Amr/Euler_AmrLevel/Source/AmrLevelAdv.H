@@ -45,8 +45,7 @@ public:
                  const amrex::Geometry& level_geom,
                  const amrex::BoxArray& bl,
                  const amrex::DistributionMapping& dm,
-                 amrex::Real            time
-                );
+                 amrex::Real            time);
 
     /**
      * The destructor.
@@ -185,10 +184,6 @@ public:
     static int max_phigrad_lev;
     static amrex::Vector<amrex::Real> phierr;
     static amrex::Vector<amrex::Real> phigrad;
-
-    // Density-gradient tagging (Euler shock refinement)
-    static int max_rhograd_lev;
-    static amrex::Vector<amrex::Real> rho_grad;
 
 #if !defined(AMREX_USE_CUDA)
 protected:

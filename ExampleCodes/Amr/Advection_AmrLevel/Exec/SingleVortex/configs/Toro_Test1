@@ -22,8 +22,9 @@ adv.v = 1
 amr.v = 1
 
 # REFINEMENT / REGRIDDING
-amr.max_level       = 0
-amr.regrid_int      = -1
+amr.max_level       = 1 # Set to 0 for no AMR and 1 or more AMR enabled
+amr.regrid_int      = 2
+amr.n_error_buf     = 2
 amr.blocking_factor = 8
 amr.max_grid_size   = 256
 
@@ -38,3 +39,12 @@ amr.checkpoint_files_output = 0
 
 # TRACERS
 adv.do_tracers = 0
+
+# For amr =comment out when not in use
+amr.n_error_buf = 2
+amr.regrid_int  = 2
+
+adv.do_reflux = 0
+
+adv.max_rhograd_lev = 1
+adv.rho_grad = 0.02 0.01 0.005

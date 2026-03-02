@@ -1,0 +1,39 @@
+Host Name: SegunO-PC
+=== If no file names and line numbers are shown below, one can run
+            addr2line -Cpfie my_exefile my_line_address
+    to convert `my_line_address` (e.g., 0x4a6b) into file name and line number.
+    Or one can use amrex/Tools/Backtrace/parse_bt.py.
+
+=== Please note that the line number reported by addr2line may not be accurate.
+    One can use
+            readelf -wl my_exefile | grep my_line_address'
+    to find out the offset for that line.
+
+ 0: ./main2d.gnu.MPI.ex(+0x21c40d) [0x5a996db5a40d]
+    amrex::BLBackTrace::handler(int) at /usr/include/x86_64-linux-gnu/bits/unistd.h:145 (discriminator 7)
+ (inlined by) amrex::BLBackTrace::print_backtrace_info(_IO_FILE*) at /home/oluse/amrex_work/amrex/Src/Base/AMReX_BLBackTrace.cpp:215 (discriminator 7)
+ (inlined by) amrex::BLBackTrace::handler(int) at /home/oluse/amrex_work/amrex/Src/Base/AMReX_BLBackTrace.cpp:101 (discriminator 7)
+
+ 1: ./main2d.gnu.MPI.ex(+0x31a53) [0x5a996d96fa53]
+    amrex::Abort(char const*) at /home/oluse/amrex_work/amrex/Src/Base/AMReX.H:187
+ (inlined by) AmrLevelAdv::read_params() at /home/oluse/amrex_work/amrex-tutorials/ExampleCodes/Amr/Euler_AmrLevel/Exec/SingleVortex/../../../Advection_AmrLevel/Source/AmrLevelAdv.cpp:789
+
+ 2: ./main2d.gnu.MPI.ex(+0x31af2) [0x5a996d96faf2]
+    AmrLevelAdv::variableSetUp() at /home/oluse/amrex_work/amrex-tutorials/ExampleCodes/Amr/Euler_AmrLevel/Exec/SingleVortex/../../../Advection_AmrLevel/Source/AmrLevelAdv.cpp:131
+
+ 3: ./main2d.gnu.MPI.ex(+0x302d60) [0x5a996dc40d60]
+    amrex::Amr::InitAmr() at /home/oluse/amrex_work/amrex/Src/Amr/AMReX_Amr.cpp:281
+
+ 4: ./main2d.gnu.MPI.ex(+0x30630b) [0x5a996dc4430b]
+    amrex::Amr::Amr(amrex::LevelBld*) at /home/oluse/amrex_work/amrex/Src/Amr/AMReX_Amr.cpp:254
+
+ 5: ./main2d.gnu.MPI.ex(+0x2b736) [0x5a996d969736]
+    main at /home/oluse/amrex_work/amrex-tutorials/ExampleCodes/Amr/Euler_AmrLevel/Exec/SingleVortex/../../../Advection_AmrLevel/Source/main.cpp:58
+
+ 6: /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x7190f0a2a1ca]
+
+ 7: /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x7190f0a2a28b]
+
+ 8: ./main2d.gnu.MPI.ex(+0x2e755) [0x5a996d96c755]
+    ?? ??:0
+

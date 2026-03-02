@@ -1,3 +1,4 @@
+
 #include <AMReX_LevelBld.H>
 #include <AmrLevelAdv.H>
 
@@ -38,16 +39,10 @@ LevelBldAdv::variableCleanUp ()
     AmrLevelAdv::variableCleanUp();
 }
 
-// -----------------------------------------------------------------
-// Default constructor call removed.
-// AMReX should not use this for AmrLevelAdv in this setup.
-// Abort explicitly if it is ever called.
-// -----------------------------------------------------------------
 AmrLevel*
 LevelBldAdv::operator() ()
 {
-    amrex::Abort("LevelBldAdv::operator()() should not be called without arguments.");
-    return nullptr;
+    return new AmrLevelAdv;
 }
 
 AmrLevel*

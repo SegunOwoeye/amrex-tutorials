@@ -7,16 +7,17 @@
 #include "Adv_F.H"
 #include "Kernels.H"
 
-#include "euler_hllc_muscl_2d.hpp"
-
 using namespace amrex;
 
 int      AmrLevelAdv::verbose         = 0;
 Real     AmrLevelAdv::cfl             = 0.9;
 int      AmrLevelAdv::do_reflux       = 1;
 
-int      AmrLevelAdv::NUM_STATE       = 4;
-int      AmrLevelAdv::NUM_GROW        = 2;
+int      AmrLevelAdv::NUM_STATE       = 1;  // One variable in the state
+int      AmrLevelAdv::NUM_GROW        = 3;  // number of ghost cells
+
+ProbParm* AmrLevelAdv::h_prob_parm = nullptr;
+ProbParm* AmrLevelAdv::d_prob_parm = nullptr;
 
 int      AmrLevelAdv::max_phierr_lev  = -1;
 int      AmrLevelAdv::max_phigrad_lev = -1;
@@ -24,65 +25,18 @@ int      AmrLevelAdv::max_phigrad_lev = -1;
 Vector<Real> AmrLevelAdv::phierr;
 Vector<Real> AmrLevelAdv::phigrad;
 
-int AmrLevelAdv::max_rhograd_lev = -1;
-amrex::Vector<amrex::Real> AmrLevelAdv::rho_grad;
-
 #ifdef AMREX_PARTICLES
 std::unique_ptr<AmrTracerParticleContainer> AmrLevelAdv::TracerPC =  nullptr;
 int AmrLevelAdv::do_tracers                       =  0;
 #endif
 
-
-namespace
+/**
+ * Default constructor.  Builds invalid object.
+ */
+AmrLevelAdv::AmrLevelAdv ()
 {
-    // [P0] Enforce rho > 0 and p > 0, then recompute E consistently.
-    void enforce_positivity(
-        amrex::MultiFab& U,
-        const amrex::BoxArray& grids,
-        const amrex::DistributionMapping& dmap,
-        const int nGrow,
-        const amrex::Real gamma)
-    {
-        constexpr amrex::Real rho_floor = 1e-12_rt;
-        constexpr amrex::Real p_floor   = 1e-12_rt;
-
-        for (amrex::MFIter mfi(U); mfi.isValid(); ++mfi)
-        {
-            const amrex::Box& bx = amrex::grow(mfi.validbox(), nGrow);
-            auto const a = U.array(mfi);
-
-            for (int j = bx.smallEnd(1); j <= bx.bigEnd(1); ++j)
-            {
-                for (int i = bx.smallEnd(0); i <= bx.bigEnd(0); ++i)
-                {
-                    amrex::Real rho  = a(i,j,0,0);
-                    amrex::Real momx = a(i,j,0,1);
-                    amrex::Real momy = a(i,j,0,2);
-                    amrex::Real E    = a(i,j,0,3);
-
-                    rho = amrex::max(rho, rho_floor);
-
-                    const amrex::Real ux = momx / rho;
-                    const amrex::Real uy = momy / rho;
-
-                    const amrex::Real kinetic = 0.5_rt * rho * (ux*ux + uy*uy);
-                    amrex::Real p_raw = (gamma - 1.0_rt) * (E - kinetic);
-
-                    if (!(p_raw > p_floor)) {
-                        p_raw = p_floor;
-                        E = p_raw / (gamma - 1.0_rt) + kinetic;
-                    }
-
-                    a(i,j,0,0) = rho;
-                    a(i,j,0,1) = rho * ux;
-                    a(i,j,0,2) = rho * uy;
-                    a(i,j,0,3) = E;
-                }
-            }
-        }
-    }
+    flux_reg = 0;
 }
-
 
 /**
  * The basic constructor.
@@ -167,6 +121,9 @@ AmrLevelAdv::variableSetUp ()
 {
     BL_ASSERT(desc_lst.size() == 0);
 
+    // Initialize struct containing problem-specific variables
+    h_prob_parm = new ProbParm{};
+    d_prob_parm = (ProbParm*)The_Arena()->alloc(sizeof(ProbParm));
 
     // Get options, set phys_bc
     read_params();
@@ -177,23 +134,17 @@ AmrLevelAdv::variableSetUp ()
 
     int lo_bc[BL_SPACEDIM];
     int hi_bc[BL_SPACEDIM];
-    // x: outflow transmissive y: periodic
-    lo_bc[0] = BCType::foextrap;
-    hi_bc[0] = BCType::foextrap;
-
-    lo_bc[1] = BCType::int_dir;
-    hi_bc[1] = BCType::int_dir;
+    for (int i = 0; i < BL_SPACEDIM; ++i) {
+        lo_bc[i] = hi_bc[i] = BCType::int_dir;   // periodic boundaries
+    }
 
     BCRec bc(lo_bc, hi_bc);
 
     StateDescriptor::BndryFunc bndryfunc(nullfill);
     bndryfunc.setRunOnGPU(true);  // I promise the bc function will launch gpu kernels.
 
-    //desc_lst.setComponent(Phi_Type, 0, "phi", bc, bndryfunc);
-    desc_lst.setComponent(Phi_Type, 0, "density", bc, bndryfunc);
-    desc_lst.setComponent(Phi_Type, 1, "momx", bc, bndryfunc);
-    desc_lst.setComponent(Phi_Type, 2, "momy", bc, bndryfunc);
-    desc_lst.setComponent(Phi_Type, 3, "energy", bc, bndryfunc);
+    desc_lst.setComponent(Phi_Type, 0, "phi", bc,
+                          bndryfunc);
 }
 
 /**
@@ -207,6 +158,9 @@ AmrLevelAdv::variableCleanUp ()
     TracerPC.reset();
 #endif
 
+    // Delete structs containing problem-specific parameters
+    delete h_prob_parm;
+    The_Arena()->free(d_prob_parm);
 }
 
 /**
@@ -239,51 +193,16 @@ AmrLevelAdv::initData ()
     MultiFab& S_tmp = S_new;
 #endif
 
-    for (MFIter mfi(S_tmp, TilingIfNotGPU()); mfi.isValid(); ++mfi)
+    for (MFIter mfi(S_tmp); mfi.isValid(); ++mfi)
     {
-        const Box& bx = mfi.tilebox();
-        auto const arr = S_tmp.array(mfi);
+        const Box& box     = mfi.validbox();
+        const int* lo      = box.loVect();
+        const int* hi      = box.hiVect();
 
-        const Real dx0 = geom.CellSize(0);
-        const Real xlo = geom.ProbLo(0);
-
-        // Toro 1 IC
-        constexpr Real rhoL = 1.0_rt;
-        constexpr Real uL   = 0.0_rt;
-        constexpr Real vL   = 0.0_rt;
-        constexpr Real pL   = 1.0_rt;
-
-        constexpr Real rhoR = 0.125_rt;
-        constexpr Real uR   = 0.0_rt;
-        constexpr Real vR   = 0.0_rt;
-        constexpr Real pR   = 0.1_rt;
-
-        constexpr Real gamma = 1.4_rt;
-        constexpr Real x0    = 0.5_rt;
-
-        auto E_from = [&](Real rho, Real u, Real v, Real p) -> Real {
-            return p/(gamma-1.0_rt) + 0.5_rt*rho*(u*u + v*v);
-        };
-
-        const Real EL = E_from(rhoL, uL, vL, pL);
-        const Real ER = E_from(rhoR, uR, vR, pR);
-
-        amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept
-        {
-            const Real x = xlo + (Real(i) + 0.5_rt)*dx0;
-
-            Real rho, u, v, E;
-            if (x < x0) {
-                rho = rhoL; u = uL; v = vL; E = EL;
-            } else {
-                rho = rhoR; u = uR; v = vR; E = ER;
-            }
-
-            arr(i,j,k,0) = rho;
-            arr(i,j,k,1) = rho*u;
-            arr(i,j,k,2) = rho*v;
-            arr(i,j,k,3) = E;
-        });
+        // Use a Fortran subroutine to initialize data on CPU.
+        initdata(&level, &cur_time, AMREX_ARLIM_3D(lo), AMREX_ARLIM_3D(hi),
+                 BL_TO_FORTRAN_3D(S_tmp[mfi]), AMREX_ZFILL(dx),
+                 AMREX_ZFILL(prob_lo));
     }
 
 #ifdef AMREX_USE_GPU
@@ -340,9 +259,8 @@ AmrLevelAdv::init ()
     FillCoarsePatch(S_new, 0, cur_time, Phi_Type, 0, NUM_STATE);
 }
 
-
-/*
- *Advance grids at this level in time.
+/**
+ * Advance grids at this level in time.
  */
 Real
 AmrLevelAdv::advance (Real time,
@@ -350,7 +268,11 @@ AmrLevelAdv::advance (Real time,
                       int  iteration,
                       int  /*ncycle*/)
 {
-    // Swap time levels
+    MultiFab& S_mm = get_new_data(Phi_Type);
+    Real maxval = S_mm.max(0);
+    Real minval = S_mm.min(0);
+
+    amrex::Print() << "phi max = " << maxval << ", min = " << minval  << std::endl;
     for (int k = 0; k < NUM_STATE_TYPE; k++) {
         state[k].allocOldData();
         state[k].swapTimeLevels(dt);
@@ -358,118 +280,159 @@ AmrLevelAdv::advance (Real time,
 
     MultiFab& S_new = get_new_data(Phi_Type);
 
-    // Fill ghost cells for U^n using AMReX machinery
-    MultiFab U0(grids, dmap, NUM_STATE, NUM_GROW);
-    FillPatch(*this, U0, NUM_GROW, time, Phi_Type, 0, NUM_STATE);
+    const Real prev_time = state[Phi_Type].prevTime();
+    const Real cur_time = state[Phi_Type].curTime();
+    const Real ctr_time = 0.5*(prev_time + cur_time);
 
-    constexpr Real gamma = 1.4_rt; // Gamma for air
+    GpuArray<Real,BL_SPACEDIM> dx = geom.CellSizeArray();
+    GpuArray<Real,BL_SPACEDIM> prob_lo = geom.ProbLoArray();
 
-    // Stage 1: U1 = U0 + dt L(U0)
+    //
+    // Get pointers to Flux registers, or set pointer to zero if not there.
+    //
+    FluxRegister *fine    = 0;
+    FluxRegister *current = 0;
 
-    MultiFab rhs0(grids, dmap, NUM_STATE, 0);
-    euler2d::compute_rhs_2d(U0, rhs0, geom, gamma);
+    int finest_level = parent->finestLevel();
 
-    MultiFab U1(grids, dmap, NUM_STATE, NUM_GROW);
-    U1.setVal(0.0_rt);
+    if (do_reflux && level < finest_level) {
+        fine = &getFluxReg(level+1);
+        fine->setVal(0.0);
+    }
 
-    for (MFIter mfi(U1); mfi.isValid(); ++mfi)   // iterate U1
+    if (do_reflux && level > 0) {
+        current = &getFluxReg(level);
+    }
+
+    MultiFab fluxes[BL_SPACEDIM];
+
+    if (do_reflux)
     {
-        const Box& bx = mfi.validbox();
-        auto const U0a = U0.const_array(mfi);
-        auto const R0a = rhs0.const_array(mfi);
-        auto       U1a = U1.array(mfi);
-
-        for (int j = bx.smallEnd(1); j <= bx.bigEnd(1); ++j)
+        for (int j = 0; j < BL_SPACEDIM; j++)
         {
-            for (int i = bx.smallEnd(0); i <= bx.bigEnd(0); ++i)
-            {
-                for (int n = 0; n < NUM_STATE; ++n)
-                {
-                    U1a(i,j,0,n) = U0a(i,j,0,n) + dt * R0a(i,j,0,n);
-                }
-            }
+            BoxArray ba = S_new.boxArray();
+            ba.surroundingNodes(j);
+            fluxes[j].define(ba, dmap, NUM_STATE, 0);
         }
     }
 
-    // Fill periodic ghost cells (y-direction)
-    U1.FillBoundary(geom.periodicity());
+    // State with ghost cells
+    MultiFab Sborder(grids, dmap, NUM_STATE, NUM_GROW);
+    FillPatch(*this, Sborder, NUM_GROW, time, Phi_Type, 0, NUM_STATE);
 
-    // Enforce x-direction outflow ghost cells
-    for (MFIter mfi(U1); mfi.isValid(); ++mfi)
+    // MF to hold the mac velocity
+    MultiFab Umac[BL_SPACEDIM];
+    for (int i = 0; i < BL_SPACEDIM; i++) {
+      BoxArray ba = S_new.boxArray();
+      ba.surroundingNodes(i);
+      Umac[i].define(ba, dmap, 1, iteration);
+    }
+
+#ifdef AMREX_USE_OMP
+#pragma omp parallel if (Gpu::notInLaunchRegion())
+#endif
     {
-        const Box& vbx = mfi.validbox();
-        auto const Ua  = U1.array(mfi);
+        FArrayBox fluxfab[AMREX_SPACEDIM], velfab[AMREX_SPACEDIM];
+        FArrayBox* flux[AMREX_SPACEDIM];
+        FArrayBox* uface[AMREX_SPACEDIM];
 
-        const int ilo = vbx.smallEnd(0);
-        const int ihi = vbx.bigEnd(0);
-        const int jlo = vbx.smallEnd(1);
-        const int jhi = vbx.bigEnd(1);
-
-        // Left ghost cells
-        for (int j = jlo; j <= jhi; ++j)
+        for (MFIter mfi(S_new, TilingIfNotGPU()); mfi.isValid(); ++mfi)
         {
-            for (int ig = 1; ig <= NUM_GROW; ++ig)
-            {
-                const int i = ilo - ig;
-                for (int n = 0; n < NUM_STATE; ++n)
-                {
-                    Ua(i,j,0,n) = Ua(ilo,j,0,n);
-                }
-            }
-        }
+            // Set up tileboxes and nodal tileboxes
+            const Box& bx = mfi.tilebox();
+            GpuArray<Box,BL_SPACEDIM> nbx;
+            AMREX_D_TERM(nbx[0] = mfi.nodaltilebox(0);,
+                         nbx[1] = mfi.nodaltilebox(1);,
+                         nbx[2] = mfi.nodaltilebox(2));
 
-        // Right ghost cells
-        for (int j = jlo; j <= jhi; ++j)
-        {
-            for (int ig = 1; ig <= NUM_GROW; ++ig)
-            {
-                const int i = ihi + ig;
-                for (int n = 0; n < NUM_STATE; ++n)
-                {
-                    Ua(i,j,0,n) = Ua(ihi,j,0,n);
-                }
+            // Grab fab pointers from state multifabs
+            const FArrayBox& statein = Sborder[mfi];
+            FArrayBox& stateout      =   S_new[mfi];
+
+            for (int i = 0; i < BL_SPACEDIM ; i++) {
+#ifdef AMREX_USE_GPU
+                // No tiling on GPU.
+                // Point flux and face velocity fab pointers to untiled fabs.
+                flux[i] = &(fluxes[i][mfi]);
+                uface[i] = &(Umac[i][mfi]);
+#else
+                // Resize temporary fabs for fluxes and face velocities
+                const Box& bxtmp = amrex::surroundingNodes(bx,i);
+                fluxfab[i].resize(bxtmp,NUM_STATE);
+                velfab[i].resize(amrex::grow(bxtmp, iteration), 1);
+
+                // Point flux and face velocity fab pointers to temporary fabs
+                flux[i] = &(fluxfab[i]);
+                uface[i] = &(velfab[i]);
+#endif
             }
+
+            // Compute Godunov velocities for each face.
+            get_face_velocity(ctr_time,
+                              AMREX_D_DECL(*uface[0], *uface[1], *uface[2]),
+                              dx, prob_lo);
+
+#ifndef AMREX_USE_GPU
+            for (int i = 0; i < BL_SPACEDIM ; i++) {
+                const Box& bxtmp = mfi.grownnodaltilebox(i, iteration);
+                Umac[i][mfi].copy(*uface[i], bxtmp);
+            }
+#endif
+
+            // CFL check.
+            AMREX_D_TERM(Real umax = uface[0]->norm<RunOn::Device>(0);,
+                         Real vmax = uface[1]->norm<RunOn::Device>(0);,
+                         Real wmax = uface[2]->norm<RunOn::Device>(0));
+
+            if (AMREX_D_TERM(umax*dt > dx[0], ||
+                             vmax*dt > dx[1], ||
+                             wmax*dt > dx[2]))
+            {
+#if (AMREX_SPACEDIM > 2)
+                amrex::AllPrint() << "umax = " << umax << ", vmax = " << vmax << ", wmax = " << wmax
+                                  << ", dt = " << dt << " dx = " << dx[0] << " " << dx[1] << " " << dx[2] << std::endl;
+#else
+                amrex::AllPrint() << "umax = " << umax << ", vmax = " << vmax
+                                  << ", dt = " << dt << " dx = " << dx[0] << " " << dx[1] << std::endl;
+#endif
+                amrex::Abort("CFL violation. Use smaller adv.cfl.");
+            }
+
+            // Advect. See Adv.cpp for implementation.
+            advect(time, bx, nbx, statein, stateout,
+                   AMREX_D_DECL(*uface[0], *uface[1], *uface[2]),
+                   AMREX_D_DECL(*flux[0],  *flux[1],  *flux[2]),
+                   dx, dt);
+
+#ifndef AMREX_USE_GPU
+            if (do_reflux) {
+                for (int i = 0; i < BL_SPACEDIM ; i++)
+                    fluxes[i][mfi].copy(*flux[i],mfi.nodaltilebox(i));
+            }
+#endif
         }
     }
 
-    // Positivity enforcement on stage state
-    enforce_positivity(U1, grids, dmap, NUM_GROW, gamma);
 
-    // Stage 2: U^{n+1} = 0.5 (U0 + U1 + dt L(U1))
-
-    MultiFab rhs1(grids, dmap, NUM_STATE, 0);
-    euler2d::compute_rhs_2d(U1, rhs1, geom, gamma);
-
-    for (MFIter mfi(S_new); mfi.isValid(); ++mfi)
-    {
-        const Box& bx = mfi.validbox();
-        auto const U0a = U0.const_array(mfi);
-        auto const U1a = U1.const_array(mfi);
-        auto const R1a = rhs1.const_array(mfi);
-        auto Una = S_new.array(mfi);
-
-        for (int j = bx.smallEnd(1); j <= bx.bigEnd(1); ++j)
-        {
-            for (int i = bx.smallEnd(0); i <= bx.bigEnd(0); ++i)
-            {
-                for (int n = 0; n < NUM_STATE; ++n)
-                {
-                    Una(i,j,0,n) =
-                        0.5_rt * (U0a(i,j,0,n)
-                                + U1a(i,j,0,n)
-                                + dt * R1a(i,j,0,n));
-                }
-            }
+    if (do_reflux) {
+        if (current) {
+            for (int i = 0; i < BL_SPACEDIM ; i++)
+                current->FineAdd(fluxes[i],i,0,0,NUM_STATE,1.);
+        }
+        if (fine) {
+            for (int i = 0; i < BL_SPACEDIM ; i++)
+                fine->CrseInit(fluxes[i],i,0,0,NUM_STATE,-1.);
         }
     }
 
-    // Final positivity enforcement on updated state
-    enforce_positivity(S_new, grids, dmap, 0, gamma);
+#ifdef AMREX_PARTICLES
+    if (TracerPC) {
+      TracerPC->AdvectWithUmac(Umac, level, dt);
+    }
+#endif
 
     return dt;
 }
-
- 
 
 /**
  * Estimate time step.
@@ -477,27 +440,57 @@ AmrLevelAdv::advance (Real time,
 Real
 AmrLevelAdv::estTimeStep (Real)
 {
+    // This is just a dummy value to start with
+    Real dt_est  = 1.0e+20;
+
+    GpuArray<Real,BL_SPACEDIM> dx = geom.CellSizeArray();
+    GpuArray<Real,BL_SPACEDIM> prob_lo = geom.ProbLoArray();
     const Real cur_time = state[Phi_Type].curTime();
+    const MultiFab& S_new = get_new_data(Phi_Type);
+    Real pred_time = cur_time;
+    if (cur_time > 0._rt) {
+        pred_time += 0.5_rt*parent->dtLevel(level);
+    }
 
-    MultiFab U0(grids, dmap, NUM_STATE, NUM_GROW);
-    FillPatch(*this, U0, NUM_GROW, cur_time, Phi_Type, 0, NUM_STATE);
+#ifdef AMREX_USE_OMP
+#pragma omp parallel reduction(min:dt_est)
+#endif
+    {
+        FArrayBox uface[BL_SPACEDIM];
 
-    constexpr Real gamma = 1.4_rt;
-    Real dt_est = euler2d::compute_dt_cfl_2d(U0, geom, gamma, cfl);
+        for (MFIter mfi(S_new, true); mfi.isValid(); ++mfi)
+        {
+            for (int i = 0; i < BL_SPACEDIM ; i++) {
+                const Box& bx = mfi.nodaltilebox(i);
+                uface[i].resize(bx,1);
+            }
+
+            // Note: no need to set elixir on uface[i] temporary fabs since
+            //       norm<RunOn::Device> kernel launch is blocking.
+
+            get_face_velocity(pred_time,
+                              AMREX_D_DECL(uface[0], uface[1], uface[2]),
+                              dx, prob_lo);
+
+            for (int i = 0; i < BL_SPACEDIM; ++i) {
+                Real umax = uface[i].norm<RunOn::Device>(0);
+                if (umax > 1.e-100) {
+                    dt_est = std::min(dt_est, dx[i] / umax);
+                }
+            }
+        }
+    }
+
+    ParallelDescriptor::ReduceRealMin(dt_est);
+    dt_est *= cfl;
 
     if (verbose) {
-        amrex::Print()
-            << "Euler dt level "
-            << level
-            << " = "
-            << dt_est
-            << std::endl;
+        amrex::Print() << "AmrLevelAdv::estTimeStep at level " << level
+                       << ":  dt_est = " << dt_est << std::endl;
     }
 
     return dt_est;
 }
-
-
 
 /**
  * Compute initial time step.
@@ -712,68 +705,59 @@ AmrLevelAdv::post_init (Real /*stop_time*/)
  * Error estimation for regridding.
  */
 void
-AmrLevelAdv::errorEst (amrex::TagBoxArray& tags,
-                       int /*clearval*/,
-                       int /*tagval*/,
-                       amrex::Real /*time*/,
-                       int /*n_error_buf*/,
-                       int /*ngrow*/)
+AmrLevelAdv::errorEst (TagBoxArray& tags,
+                       int          /*clearval*/,
+                       int          /*tagval*/,
+                       Real         /*time*/,
+                       int          /*n_error_buf*/,
+                       int          /*ngrow*/)
 {
-    using namespace amrex;
-
-    if (level > max_rhograd_lev) return;
-    if (rho_grad.empty()) return;
-
     MultiFab& S_new = get_new_data(Phi_Type);
 
-    MultiFab Stmp;
-    const Real cur_time = state[Phi_Type].curTime();
-    Stmp.define(S_new.boxArray(), S_new.DistributionMap(), S_new.nComp(), 1);
-    FillPatch(*this, Stmp, 1, cur_time, Phi_Type, 0, S_new.nComp());
+    // Properly fill patches and ghost cells for phi gradient check.
+    MultiFab phitmp;
+    if (level < max_phigrad_lev) {
+        const Real cur_time = state[Phi_Type].curTime();
+        phitmp.define(S_new.boxArray(), S_new.DistributionMap(), NUM_STATE, 1);
+        FillPatch(*this, phitmp, 1, cur_time, Phi_Type, 0, NUM_STATE);
+    }
+    MultiFab const& phi = (level < max_phigrad_lev) ? phitmp : S_new;
 
-    MultiFab const& S = Stmp;
-
-    const Real thr = rho_grad[level];
-    const int  comp_rho = 0;
-
-    const Real dx = geom.CellSize(0);
-
-    const char setval = TagBox::SET;
+    const char   tagval = TagBox::SET;
+    // const char clearval = TagBox::CLEAR;
 
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (Gpu::notInLaunchRegion())
 #endif
-    for (MFIter mfi(S, TilingIfNotGPU()); mfi.isValid(); ++mfi)
     {
-        const Box& bx = mfi.tilebox();      // valid cells
-        auto const s  = S.const_array(mfi);
-        auto       t  = tags.array(mfi);
-
-        const int ilo = bx.smallEnd(0);
-        const int ihi = bx.bigEnd(0);
-
-        amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+        for (MFIter mfi(phi,TilingIfNotGPU()); mfi.isValid(); ++mfi)
         {
-            // safe neighbor indices inside this tile
-            int im = (i == ilo) ? i : i-1;
-            int ip = (i == ihi) ? i : i+1;
+            const Box& tilebx  = mfi.tilebox();
+            const auto phiarr  = phi.array(mfi);
+            auto       tagarr  = tags.array(mfi);
 
-            Real drdx = amrex::Math::abs(s(ip,j,k,comp_rho) - s(im,j,k,comp_rho)) / ( (ip-im)*dx );
-
-            if (drdx > thr) {
-                t(i,j,k) = setval;
+            // Tag cells with high phi.
+            if (level < max_phierr_lev) {
+                const Real phierr_lev  = phierr[level];
+                amrex::ParallelFor(tilebx,
+                [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+                {
+                    state_error(i, j, k, tagarr, phiarr, phierr_lev, tagval);
+                });
             }
-        });
-    }
 
-    if (level == 0 && amrex::ParallelDescriptor::IOProcessor()) {
-        amrex::Print() << "[errorEst] level=" << level
-                    << " thr=" << thr
-                    << " time=" << state[Phi_Type].curTime()
-                    << "\n";
+            // Tag cells with high phi gradient.
+            if (level < max_phigrad_lev) {
+                const Real phigrad_lev = phigrad[level];
+                amrex::ParallelFor(tilebx,
+                [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+                {
+                    grad_error(i, j, k, tagarr, phiarr, phigrad_lev, tagval);
+                });
+            }
+        }
     }
 }
-
 
 /**
  * Read parameters from input file.
@@ -789,20 +773,9 @@ AmrLevelAdv::read_params ()
 
     ParmParse pp("adv");
 
-    pp.query("max_rhograd_lev", max_rhograd_lev);
-
-    if (max_rhograd_lev >= 0) {
-        rho_grad.resize(max_rhograd_lev+1, 0.0_rt);
-        pp.queryarr("rho_grad", rho_grad, 0, max_rhograd_lev+1);
-    }
-
     pp.query("v",verbose);
     pp.query("cfl",cfl);
     pp.query("do_reflux",do_reflux);
-
-    pp.query("max_rhograd_lev", max_rhograd_lev);
-
-   
 
     Geometry const* gg = AMReX::top()->getDefaultGeometry();
 
@@ -811,9 +784,9 @@ AmrLevelAdv::read_params ()
         amrex::Abort("Please set geom.coord_sys = 0");
     }
 
-    // For shock tube: require periodic in y, non-periodic in x.
-    if (!gg->isPeriodic(1)) {
-        amrex::Abort("For this setup, please set geometry.is_periodic = 0 1");
+    // This tutorial code only supports periodic boundaries.
+    if (! gg->isAllPeriodic()) {
+        amrex::Abort("Please set geom.is_periodic = 1 1 1");
     }
 
 #ifdef AMREX_PARTICLES
