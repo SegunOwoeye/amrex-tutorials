@@ -9,31 +9,40 @@ Host Name: SegunO-PC
             readelf -wl my_exefile | grep my_line_address'
     to find out the offset for that line.
 
- 0: ./main2d.gnu.MPI.ex(+0x21c40d) [0x5a996db5a40d]
+ 0: ./main2d.gnu.MPI.ex(+0x22684d) [0x571813e5a84d]
     amrex::BLBackTrace::handler(int) at /usr/include/x86_64-linux-gnu/bits/unistd.h:145 (discriminator 7)
  (inlined by) amrex::BLBackTrace::print_backtrace_info(_IO_FILE*) at /home/oluse/amrex_work/amrex/Src/Base/AMReX_BLBackTrace.cpp:215 (discriminator 7)
  (inlined by) amrex::BLBackTrace::handler(int) at /home/oluse/amrex_work/amrex/Src/Base/AMReX_BLBackTrace.cpp:101 (discriminator 7)
 
- 1: ./main2d.gnu.MPI.ex(+0x31a53) [0x5a996d96fa53]
-    amrex::Abort(char const*) at /home/oluse/amrex_work/amrex/Src/Base/AMReX.H:187
- (inlined by) AmrLevelAdv::read_params() at /home/oluse/amrex_work/amrex-tutorials/ExampleCodes/Amr/Euler_AmrLevel/Exec/SingleVortex/../../../Advection_AmrLevel/Source/AmrLevelAdv.cpp:789
+ 1: ./main2d.gnu.MPI.ex(+0xbca49) [0x571813cf0a49]
+    std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >::_M_data() const at /usr/include/c++/13/bits/basic_string.h:223
+ (inlined by) std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >::_M_is_local() const at /usr/include/c++/13/bits/basic_string.h:264
+ (inlined by) std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >::_M_dispose() at /usr/include/c++/13/bits/basic_string.h:282
+ (inlined by) std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >::~basic_string() at /usr/include/c++/13/bits/basic_string.h:804
+ (inlined by) amrex::FileOpenFailed(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&) at /home/oluse/amrex_work/amrex/Src/Base/AMReX_Utility.cpp:142
 
- 2: ./main2d.gnu.MPI.ex(+0x31af2) [0x5a996d96faf2]
-    AmrLevelAdv::variableSetUp() at /home/oluse/amrex_work/amrex-tutorials/ExampleCodes/Amr/Euler_AmrLevel/Exec/SingleVortex/../../../Advection_AmrLevel/Source/AmrLevelAdv.cpp:131
+ 2: ./main2d.gnu.MPI.ex(+0xf47a8) [0x571813d287a8]
+    amrex::ParallelDescriptor::ReadAndBcastFile(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, amrex::Vector<char, std::allocator<char> >&, bool, ompi_communicator_t* const&) at /home/oluse/amrex_work/amrex/Src/Base/AMReX_ParallelDescriptor.cpp:1517
 
- 3: ./main2d.gnu.MPI.ex(+0x302d60) [0x5a996dc40d60]
-    amrex::Amr::InitAmr() at /home/oluse/amrex_work/amrex/Src/Amr/AMReX_Amr.cpp:281
+ 3: ./main2d.gnu.MPI.ex(+0xa1275) [0x571813cd5275]
+    amrex::(anonymous namespace)::read_file(char const*, std::unordered_map<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, amrex::ParmParse::PP_entry, std::hash<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::equal_to<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::allocator<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, amrex::ParmParse::PP_entry> > >&) at /home/oluse/amrex_work/amrex/Src/Base/AMReX_ParmParse.cpp:487 (discriminator 2)
 
- 4: ./main2d.gnu.MPI.ex(+0x30630b) [0x5a996dc4430b]
-    amrex::Amr::Amr(amrex::LevelBld*) at /home/oluse/amrex_work/amrex/Src/Amr/AMReX_Amr.cpp:254
+ 4: ./main2d.gnu.MPI.ex(+0xa3a7a) [0x571813cd7a7a]
+    amrex::ParmParse::Initialize(int, char**, char const*) at /home/oluse/amrex_work/amrex/Src/Base/AMReX_ParmParse.cpp:1019
+ (inlined by) amrex::ParmParse::Initialize(int, char**, char const*) at /home/oluse/amrex_work/amrex/Src/Base/AMReX_ParmParse.cpp:1235
 
- 5: ./main2d.gnu.MPI.ex(+0x2b736) [0x5a996d969736]
-    main at /home/oluse/amrex_work/amrex-tutorials/ExampleCodes/Amr/Euler_AmrLevel/Exec/SingleVortex/../../../Advection_AmrLevel/Source/main.cpp:58
+ 5: ./main2d.gnu.MPI.ex(+0x799ee) [0x571813cad9ee]
+    amrex::Initialize(int&, char**&, bool, ompi_communicator_t*, std::function<void ()> const&, std::ostream&, std::ostream&, void (*)(char const*), int) at /home/oluse/amrex_work/amrex/Src/Base/AMReX.cpp:477
 
- 6: /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x7190f0a2a1ca]
+ 6: ./main2d.gnu.MPI.ex(+0x2b4e9) [0x571813c5f4e9]
+    std::_Function_base::~_Function_base() at /usr/include/c++/13/bits/std_function.h:243
+ (inlined by) std::function<void ()>::~function() at /usr/include/c++/13/bits/std_function.h:334
+ (inlined by) main at /home/oluse/amrex_work/amrex-tutorials/ExampleCodes/Amr/Euler_AmrLevel/Exec/SingleVortex/../../../Advection_AmrLevel/Source/main.cpp:19
 
- 7: /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x7190f0a2a28b]
+ 7: /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x7855afc2a1ca]
 
- 8: ./main2d.gnu.MPI.ex(+0x2e755) [0x5a996d96c755]
+ 8: /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x7855afc2a28b]
+
+ 9: ./main2d.gnu.MPI.ex(+0x2e665) [0x571813c62665]
     ?? ??:0
 

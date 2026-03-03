@@ -1,5 +1,3 @@
-// bc_nullfill.cpp (or whatever file defines nullfill)
-
 #include <AMReX_FArrayBox.H>
 #include <AMReX_Geometry.H>
 #include <AMReX_PhysBCFunct.H>

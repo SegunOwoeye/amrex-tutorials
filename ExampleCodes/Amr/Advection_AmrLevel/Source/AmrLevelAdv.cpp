@@ -20,6 +20,7 @@ int      AmrLevelAdv::NUM_GROW        = 2;
 
 int      AmrLevelAdv::max_phierr_lev  = -1;
 int      AmrLevelAdv::max_phigrad_lev = -1;
+Real     AmrLevelAdv::gamma           = 1.4;
 
 Vector<Real> AmrLevelAdv::phierr;
 Vector<Real> AmrLevelAdv::phigrad;
@@ -213,13 +214,17 @@ AmrLevelAdv::variableCleanUp ()
  * Initialize grid data at problem start-up.
  */
 void
-AmrLevelAdv::initData ()
+AmrLevelAdv::initData()
 {
     //
     // Loop over grids.
     //
-    const Real* dx  = geom.CellSize();
-    const Real* prob_lo = geom.ProbLo();
+    const Real* dx_in      = geom.CellSize();
+    const Real* prob_lo_in = geom.ProbLo();
+
+    Real dx[3]      = {dx_in[0], dx_in[1], 0.0_rt};
+    Real prob_lo[3] = {prob_lo_in[0], prob_lo_in[1], 0.0_rt};
+
     MultiFab& S_new = get_new_data(Phi_Type);
     Real cur_time   = state[Phi_Type].curTime();
 
@@ -241,50 +246,30 @@ AmrLevelAdv::initData ()
 
     for (MFIter mfi(S_tmp, TilingIfNotGPU()); mfi.isValid(); ++mfi)
     {
-        const Box& bx = mfi.tilebox();
-        auto const arr = S_tmp.array(mfi);
+        FArrayBox& fab = S_tmp[mfi];
+        const Box& bx  = mfi.validbox();
+        const Box& fbx = fab.box();
 
-        const Real dx0 = geom.CellSize(0);
-        const Real xlo = geom.ProbLo(0);
+        int lo[3]  = {bx.smallEnd(0),  bx.smallEnd(1),  0};
+        int hi[3]  = {bx.bigEnd(0),    bx.bigEnd(1),    0};
 
-        // Toro 1 IC
-        constexpr Real rhoL = 1.0_rt;
-        constexpr Real uL   = 0.0_rt;
-        constexpr Real vL   = 0.0_rt;
-        constexpr Real pL   = 1.0_rt;
+        int dlo[3] = {fbx.smallEnd(0), fbx.smallEnd(1), 0};
+        int dhi[3] = {fbx.bigEnd(0),   fbx.bigEnd(1),   0};
 
-        constexpr Real rhoR = 0.125_rt;
-        constexpr Real uR   = 0.0_rt;
-        constexpr Real vR   = 0.0_rt;
-        constexpr Real pR   = 0.1_rt;
-
-        constexpr Real gamma = 1.4_rt;
-        constexpr Real x0    = 0.5_rt;
-
-        auto E_from = [&](Real rho, Real u, Real v, Real p) -> Real {
-            return p/(gamma-1.0_rt) + 0.5_rt*rho*(u*u + v*v);
-        };
-
-        const Real EL = E_from(rhoL, uL, vL, pL);
-        const Real ER = E_from(rhoR, uR, vR, pR);
-
-        amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept
-        {
-            const Real x = xlo + (Real(i) + 0.5_rt)*dx0;
-
-            Real rho, u, v, E;
-            if (x < x0) {
-                rho = rhoL; u = uL; v = vL; E = EL;
-            } else {
-                rho = rhoR; u = uR; v = vR; E = ER;
-            }
-
-            arr(i,j,k,0) = rho;
-            arr(i,j,k,1) = rho*u;
-            arr(i,j,k,2) = rho*v;
-            arr(i,j,k,3) = E;
-        });
+        initdata_(
+            &level,
+            &cur_time,
+            lo,
+            hi,
+            fab.dataPtr(),
+            dlo,
+            dhi,
+            dx,
+            prob_lo
+        );
     }
+
+
 
 #ifdef AMREX_USE_GPU
     // Explicitly copy data to GPU.
@@ -362,7 +347,6 @@ AmrLevelAdv::advance (Real time,
     MultiFab U0(grids, dmap, NUM_STATE, NUM_GROW);
     FillPatch(*this, U0, NUM_GROW, time, Phi_Type, 0, NUM_STATE);
 
-    constexpr Real gamma = 1.4_rt; // Gamma for air
 
     // Stage 1: U1 = U0 + dt L(U0)
 
@@ -482,7 +466,6 @@ AmrLevelAdv::estTimeStep (Real)
     MultiFab U0(grids, dmap, NUM_STATE, NUM_GROW);
     FillPatch(*this, U0, NUM_GROW, cur_time, Phi_Type, 0, NUM_STATE);
 
-    constexpr Real gamma = 1.4_rt;
     Real dt_est = euler2d::compute_dt_cfl_2d(U0, geom, gamma, cfl);
 
     if (verbose) {
@@ -754,13 +737,22 @@ AmrLevelAdv::errorEst (amrex::TagBoxArray& tags,
 
         amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
         {
-            // safe neighbor indices inside this tile
+            // Now considering x, y, angle and quadrants
             int im = (i == ilo) ? i : i-1;
             int ip = (i == ihi) ? i : i+1;
 
-            Real drdx = amrex::Math::abs(s(ip,j,k,comp_rho) - s(im,j,k,comp_rho)) / ( (ip-im)*dx );
+            int jlo = bx.smallEnd(1);
+            int jhi = bx.bigEnd(1);
 
-            if (drdx > thr) {
+            int jm = (j == jlo) ? j : j-1;
+            int jp = (j == jhi) ? j : j+1;
+
+            Real drdx = amrex::Math::abs(s(ip,j,k,comp_rho) - s(im,j,k,comp_rho)) / ((ip-im)*dx);
+            Real drdy = amrex::Math::abs(s(i,jp,k,comp_rho) - s(i,jm,k,comp_rho)) / ((jp-jm)*geom.CellSize(1));
+
+            Real grad = std::sqrt(drdx*drdx + drdy*drdy);
+
+            if (grad > thr) {
                 t(i,j,k) = setval;
             }
         });
@@ -799,6 +791,7 @@ AmrLevelAdv::read_params ()
     pp.query("v",verbose);
     pp.query("cfl",cfl);
     pp.query("do_reflux",do_reflux);
+    pp.query("gamma", gamma);
 
     pp.query("max_rhograd_lev", max_rhograd_lev);
 

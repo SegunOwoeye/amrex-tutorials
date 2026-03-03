@@ -8,12 +8,17 @@ extern "C"
 {
 #endif
 
-  void initdata_(const int* level,
-                 const amrex_real* time,
-                 const int* lo, const int* hi,
-                 BL_FORT_FAB_ARG_3D(state),
-                 const amrex_real* dx,
-                 const amrex_real* problo);
+  void initdata_(
+        int* level,
+        amrex::Real* time,
+        const int* lo,
+        const int* hi,
+        amrex::Real* state,
+        const int* dlo,
+        const int* dhi,
+        const amrex::Real* dx,
+        const amrex::Real* prob_lo
+    );
 
 #ifdef __cplusplus
 }

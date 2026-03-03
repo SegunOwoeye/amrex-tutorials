@@ -506,7 +506,7 @@ namespace euler2d
             amrex::Abort("Aborting due to non-physical rho or pressure in CFL computation.");
         }
 
-        amrex::Print() << "Max wavespeed (max(|u|+c, |v|+c)) = " << max_speed << "\n";
+        //amrex::Print() << "Max wavespeed (max(|u|+c, |v|+c)) = " << max_speed << "\n";
 
         return cfl * dt_min;
     }

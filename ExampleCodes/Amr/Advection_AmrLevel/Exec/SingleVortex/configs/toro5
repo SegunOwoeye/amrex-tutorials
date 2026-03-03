@@ -1,0 +1,75 @@
+# ------------------  INPUTS TO MAIN PROGRAM  -------------------
+max_step  = 1000000
+stop_time = 0.035
+
+#  GEOMETRY / DOMAIN (2D) 
+geometry.coord_sys   = 0
+geometry.prob_lo     = 0.0  0.0
+geometry.prob_hi     = 1.0  1.0
+
+# Toro test: non-periodic in x, periodic in y (thin strip)
+geometry.is_periodic = 0  1
+
+#  BASE RESOLUTION  
+# For convergence studies use: (104,8), (208,8), (416,8) or (96,8), (192,8), (384,8)
+amr.n_cell           = 104  8
+
+# TIME STEP CONTROL  
+adv.cfl = 0.3
+
+#  VERBOSITY 
+# Disable for timing studies (set both to 0)
+adv.v = 0
+amr.v = 0
+
+# AMR / REGRIDDING 
+# Set amr.max_level=0 for no AMR; =1 for AMR enabled
+amr.max_level       = 0
+amr.regrid_int      = 2
+amr.n_error_buf     = 2
+
+# Make grids compatible with blocking_factor and max_grid_size
+amr.blocking_factor = 8
+amr.max_grid_size   = 256
+
+#  CONSERVATION ACROSS LEVELS 
+# Must be 1 for clean AMR comparisons
+adv.do_reflux = 0
+
+#  REFINEMENT CRITERION 
+# Tags based on |grad rho| threshold 
+adv.max_rhograd_lev = 1
+adv.rho_grad        = 0.02  0.01 0.005
+
+#  INITIAL CONDITIONS 
+# prob.type: Scenarios were created in line with the CW
+# 0 = split in x at x0 (Toro in 2D strip)
+# 1 = split in y at y0
+# 2 = diagonal line
+# 3 = quadrant (Lax-Liu 2D test)
+prob.type  = 0
+prob.gamma = 1.4
+prob.x0    = 0.5
+
+# Primitive states (rho, u, v, p) converted to conserved in prob.f90
+prob.rhoL = 5.99924
+prob.uL   = 19.5975
+prob.vL   = 0.0
+prob.pL   = 460.894
+
+prob.rhoR = 5.99242
+prob.uR   = -6.19633
+prob.vR   = 0.0
+prob.pR   = 46.0950
+
+# OUTPUT 
+# For timing studies set plot_files_output=0 and adv.v=0, amr.v=0
+amr.plot_files_output = 1
+amr.plot_int          = -1
+amr.plot_per          = -1
+amr.plot_file = ../../../../../../CPP/data/one_dimensional_test/No_AMR/toro3/plt
+
+amr.checkpoint_files_output = 0
+
+# TRACERS  
+adv.do_tracers = 0
