@@ -21,6 +21,7 @@ int      AmrLevelAdv::NUM_GROW        = 2;
 int      AmrLevelAdv::max_phierr_lev  = -1;
 int      AmrLevelAdv::max_phigrad_lev = -1;
 Real     AmrLevelAdv::gamma           = 1.4;
+int      AmrLevelAdv::prob_type       = 0;
 
 Vector<Real> AmrLevelAdv::phierr;
 Vector<Real> AmrLevelAdv::phigrad;
@@ -174,7 +175,7 @@ AmrLevelAdv::variableSetUp ()
 
     desc_lst.addDescriptor(Phi_Type,IndexType::TheCellType(),
                            StateDescriptor::Point,0,NUM_STATE,
-                           &cell_cons_interp);
+                           &pc_interp);
 
     int lo_bc[BL_SPACEDIM];
     int hi_bc[BL_SPACEDIM];
@@ -214,54 +215,59 @@ AmrLevelAdv::variableCleanUp ()
  * Initialize grid data at problem start-up.
  */
 void
-AmrLevelAdv::initData()
+AmrLevelAdv::initData ()
 {
-    //
-    // Loop over grids.
-    //
-    const Real* dx_in      = geom.CellSize();
-    const Real* prob_lo_in = geom.ProbLo();
-
-    Real dx[3]      = {dx_in[0], dx_in[1], 0.0_rt};
-    Real prob_lo[3] = {prob_lo_in[0], prob_lo_in[1], 0.0_rt};
+    const Real* dx      = geom.CellSize();
+    const Real* prob_lo = geom.ProbLo();
 
     MultiFab& S_new = get_new_data(Phi_Type);
     Real cur_time   = state[Phi_Type].curTime();
 
     if (verbose) {
-        amrex::Print() << "Initializing the data at level " << level << std::endl;
+        amrex::Print() << "Initializing the data at level "
+                       << level << std::endl;
     }
 
-#ifdef AMREX_USE_GPU
-    // Create temporary MultiFab on CPU using pinned memory
-    MultiFab S_tmp(S_new.boxArray(),
-                   S_new.DistributionMap(),
-                   S_new.nComp(),
-                   S_new.nGrowVect(),
-                   MFInfo().SetArena(The_Pinned_Arena()));
-#else
-    // Use a MultiFab pointer
-    MultiFab& S_tmp = S_new;
-#endif
-
-    for (MFIter mfi(S_tmp, TilingIfNotGPU()); mfi.isValid(); ++mfi)
+    for (MFIter mfi(S_new, TilingIfNotGPU()); mfi.isValid(); ++mfi)
     {
-        FArrayBox& fab = S_tmp[mfi];
-        const Box& bx  = mfi.validbox();
-        const Box& fbx = fab.box();
+        const Box& bx  = mfi.tilebox();      // cells we will fill
+        const Box& fbx = S_new[mfi].box();   // full FAB bounds (dlo/dhi must match this)
 
-        int lo[3]  = {bx.smallEnd(0),  bx.smallEnd(1),  0};
-        int hi[3]  = {bx.bigEnd(0),    bx.bigEnd(1),    0};
+        const int* lo2  = bx.loVect();
+        const int* hi2  = bx.hiVect();
 
-        int dlo[3] = {fbx.smallEnd(0), fbx.smallEnd(1), 0};
-        int dhi[3] = {fbx.bigEnd(0),   fbx.bigEnd(1),   0};
+        const int* dlo2 = fbx.loVect();
+        const int* dhi2 = fbx.hiVect();
+
+        int lo[3];
+        int hi[3];
+        int dlo[3];
+        int dhi[3];
+
+        lo[0]  = lo2[0];
+        lo[1]  = lo2[1];
+        lo[2]  = 0;
+
+        hi[0]  = hi2[0];
+        hi[1]  = hi2[1];
+        hi[2]  = 0;
+
+        dlo[0] = dlo2[0];
+        dlo[1] = dlo2[1];
+        dlo[2] = 0;
+
+        dhi[0] = dhi2[0];
+        dhi[1] = dhi2[1];
+        dhi[2] = 0;
+
+        Real* state_ptr = S_new[mfi].dataPtr();
 
         initdata_(
             &level,
             &cur_time,
             lo,
             hi,
-            fab.dataPtr(),
+            state_ptr,
             dlo,
             dhi,
             dx,
@@ -269,22 +275,16 @@ AmrLevelAdv::initData()
         );
     }
 
-
-
-#ifdef AMREX_USE_GPU
-    // Explicitly copy data to GPU.
-    amrex::htod_memcpy(S_new, S_tmp);
-#endif
-
 #ifdef AMREX_PARTICLES
     init_particles();
 #endif
 
     if (verbose) {
-        amrex::Print() << "Done initializing the level " << level
-                       << " data " << std::endl;
+        amrex::Print() << "Done initializing the level "
+                       << level << " data " << std::endl;
     }
 }
+
 
 /**
  * Initialize data on this level from another AmrLevelAdv (during regrid).
@@ -304,8 +304,8 @@ AmrLevelAdv::init (AmrLevel &old)
     setTimeLevel(cur_time,dt_old,dt_new);
 
     MultiFab& S_new = get_new_data(Phi_Type);
-
     FillPatch(old, S_new, 0, cur_time, Phi_Type, 0, NUM_STATE);
+    enforce_positivity(S_new, grids, dmap, 0, gamma);
 }
 
 /**
@@ -323,6 +323,7 @@ AmrLevelAdv::init ()
     setTimeLevel(cur_time,dt_old,dt);
     MultiFab& S_new = get_new_data(Phi_Type);
     FillCoarsePatch(S_new, 0, cur_time, Phi_Type, 0, NUM_STATE);
+    enforce_positivity(S_new, grids, dmap, 0, gamma);
 }
 
 
@@ -335,7 +336,7 @@ AmrLevelAdv::advance (Real time,
                       int  iteration,
                       int  /*ncycle*/)
 {
-    // Swap time levels
+    // [1] Swap time levels
     for (int k = 0; k < NUM_STATE_TYPE; k++) {
         state[k].allocOldData();
         state[k].swapTimeLevels(dt);
@@ -343,86 +344,103 @@ AmrLevelAdv::advance (Real time,
 
     MultiFab& S_new = get_new_data(Phi_Type);
 
-    // Fill ghost cells for U^n using AMReX machinery
+    // [2] Allocate face-flux MultiFabs for refluxing (x and y, node-centred in each direction)
+    const bool need_reflux = (do_reflux && (flux_reg || level < parent->finestLevel()));
+
+    amrex::BoxArray ba_x = amrex::convert(grids, amrex::IntVect::TheDimensionVector(0));
+    amrex::BoxArray ba_y = amrex::convert(grids, amrex::IntVect::TheDimensionVector(1));
+
+    MultiFab flux_x0(ba_x, dmap, NUM_STATE, 0);
+    MultiFab flux_y0(ba_y, dmap, NUM_STATE, 0);
+    MultiFab flux_x1(ba_x, dmap, NUM_STATE, 0);
+    MultiFab flux_y1(ba_y, dmap, NUM_STATE, 0);
+
+    MultiFab* pfx0 = need_reflux ? &flux_x0 : nullptr;
+    MultiFab* pfy0 = need_reflux ? &flux_y0 : nullptr;
+    MultiFab* pfx1 = need_reflux ? &flux_x1 : nullptr;
+    MultiFab* pfy1 = need_reflux ? &flux_y1 : nullptr;
+
+    // [3] Fill ghost cells for U^n
     MultiFab U0(grids, dmap, NUM_STATE, NUM_GROW);
     FillPatch(*this, U0, NUM_GROW, time, Phi_Type, 0, NUM_STATE);
+    U0.FillBoundary(geom.periodicity());
 
+    // [3.0] Clamp ghost cells on fine levels - interpolation across shocks can produce
+    //       unphysical values at coarse-fine boundaries
+    if (level > 0)
+        enforce_positivity(U0, grids, dmap, NUM_GROW, gamma);
 
-    // Stage 1: U1 = U0 + dt L(U0)
-
-    MultiFab rhs0(grids, dmap, NUM_STATE, 0);
-    euler2d::compute_rhs_2d(U0, rhs0, geom, gamma);
-
-    MultiFab U1(grids, dmap, NUM_STATE, NUM_GROW);
-    U1.setVal(0.0_rt);
-
-    for (MFIter mfi(U1); mfi.isValid(); ++mfi)   // iterate U1
-    {
-        const Box& bx = mfi.validbox();
-        auto const U0a = U0.const_array(mfi);
-        auto const R0a = rhs0.const_array(mfi);
-        auto       U1a = U1.array(mfi);
-
-        for (int j = bx.smallEnd(1); j <= bx.bigEnd(1); ++j)
-        {
-            for (int i = bx.smallEnd(0); i <= bx.bigEnd(0); ++i)
-            {
-                for (int n = 0; n < NUM_STATE; ++n)
-                {
-                    U1a(i,j,0,n) = U0a(i,j,0,n) + dt * R0a(i,j,0,n);
-                }
-            }
-        }
-    }
-
-    // Fill periodic ghost cells (y-direction)
-    U1.FillBoundary(geom.periodicity());
-
-    // Enforce x-direction outflow ghost cells
-    for (MFIter mfi(U1); mfi.isValid(); ++mfi)
+    // [3.1] X outflow BCs for U0 - only on patches touching physical boundary
+    for (MFIter mfi(U0); mfi.isValid(); ++mfi)
     {
         const Box& vbx = mfi.validbox();
-        auto const Ua  = U1.array(mfi);
-
+        auto const Ua  = U0.array(mfi);
         const int ilo = vbx.smallEnd(0);
         const int ihi = vbx.bigEnd(0);
         const int jlo = vbx.smallEnd(1);
         const int jhi = vbx.bigEnd(1);
 
-        // Left ghost cells
-        for (int j = jlo; j <= jhi; ++j)
-        {
-            for (int ig = 1; ig <= NUM_GROW; ++ig)
-            {
-                const int i = ilo - ig;
-                for (int n = 0; n < NUM_STATE; ++n)
-                {
-                    Ua(i,j,0,n) = Ua(ilo,j,0,n);
-                }
-            }
-        }
+        // [3.1.1] Only fill left ghost if this patch touches the left physical boundary
+        const bool at_lo_x = (ilo == geom.Domain().smallEnd(0));
+        const bool at_hi_x = (ihi == geom.Domain().bigEnd(0));
 
-        // Right ghost cells
         for (int j = jlo; j <= jhi; ++j)
-        {
             for (int ig = 1; ig <= NUM_GROW; ++ig)
-            {
-                const int i = ihi + ig;
-                for (int n = 0; n < NUM_STATE; ++n)
-                {
-                    Ua(i,j,0,n) = Ua(ihi,j,0,n);
+                for (int n = 0; n < NUM_STATE; ++n) {
+                    if (at_lo_x) Ua(ilo - ig, j, 0, n) = Ua(ilo, j, 0, n);
+                    if (at_hi_x) Ua(ihi + ig, j, 0, n) = Ua(ihi, j, 0, n);
                 }
-            }
-        }
     }
 
-    // Positivity enforcement on stage state
+    enforce_positivity(U0, grids, dmap, NUM_GROW, gamma);
+
+    // [4] Stage 1: U1 = U0 + dt * L(U0)
+    MultiFab rhs0(grids, dmap, NUM_STATE, 0);
+    euler2d::compute_rhs_2d(U0, rhs0, geom, gamma, pfx0, pfy0);
+
+    MultiFab U1(grids, dmap, NUM_STATE, NUM_GROW);
+    U1.setVal(0.0_rt);
+
+    for (MFIter mfi(U1); mfi.isValid(); ++mfi)
+    {
+        const Box& bx = mfi.validbox();
+        auto const U0a = U0.const_array(mfi);
+        auto const R0a = rhs0.const_array(mfi);
+        auto       U1a = U1.array(mfi);
+        for (int j = bx.smallEnd(1); j <= bx.bigEnd(1); ++j)
+            for (int i = bx.smallEnd(0); i <= bx.bigEnd(0); ++i)
+                for (int n = 0; n < NUM_STATE; ++n)
+                    U1a(i,j,0,n) = U0a(i,j,0,n) + dt * R0a(i,j,0,n);
+    }
+
+    U1.FillBoundary(geom.periodicity());
+
+    // [4.1] X outflow BCs for U1
+    for (MFIter mfi(U1); mfi.isValid(); ++mfi)
+    {
+        const Box& vbx = mfi.validbox();
+        auto const Ua  = U1.array(mfi);
+        const int ilo = vbx.smallEnd(0);
+        const int ihi = vbx.bigEnd(0);
+        const int jlo = vbx.smallEnd(1);
+        const int jhi = vbx.bigEnd(1);
+
+        const bool at_lo_x = (ilo == geom.Domain().smallEnd(0));  
+        const bool at_hi_x = (ihi == geom.Domain().bigEnd(0));    
+
+        for (int j = jlo; j <= jhi; ++j)
+            for (int ig = 1; ig <= NUM_GROW; ++ig)
+                for (int n = 0; n < NUM_STATE; ++n) {
+                    if (at_lo_x) Ua(ilo - ig, j, 0, n) = Ua(ilo, j, 0, n);
+                    if (at_hi_x) Ua(ihi + ig, j, 0, n) = Ua(ihi, j, 0, n); 
+                }
+    }
+
     enforce_positivity(U1, grids, dmap, NUM_GROW, gamma);
 
-    // Stage 2: U^{n+1} = 0.5 (U0 + U1 + dt L(U1))
-
+    // [5] Stage 2: U^{n+1} = 0.5 * (U0 + U1 + dt * L(U1))
     MultiFab rhs1(grids, dmap, NUM_STATE, 0);
-    euler2d::compute_rhs_2d(U1, rhs1, geom, gamma);
+    euler2d::compute_rhs_2d(U1, rhs1, geom, gamma, pfx1, pfy1);
 
     for (MFIter mfi(S_new); mfi.isValid(); ++mfi)
     {
@@ -431,28 +449,55 @@ AmrLevelAdv::advance (Real time,
         auto const U1a = U1.const_array(mfi);
         auto const R1a = rhs1.const_array(mfi);
         auto Una = S_new.array(mfi);
-
         for (int j = bx.smallEnd(1); j <= bx.bigEnd(1); ++j)
-        {
             for (int i = bx.smallEnd(0); i <= bx.bigEnd(0); ++i)
-            {
                 for (int n = 0; n < NUM_STATE; ++n)
-                {
                     Una(i,j,0,n) =
                         0.5_rt * (U0a(i,j,0,n)
                                 + U1a(i,j,0,n)
                                 + dt * R1a(i,j,0,n));
-                }
-            }
+    }
+
+    enforce_positivity(S_new, grids, dmap, 0, gamma);
+
+    // [6] Accumulate fluxes into FluxRegister
+    if (need_reflux)
+    {
+        const auto dx = geom.CellSizeArray();
+        const Real dtw = 0.5_rt * dt;
+
+        const Real area_x = dx[1]; // dy
+        const Real area_y = dx[0]; // dx
+
+        const Real scale_x = dtw * area_x;
+        const Real scale_y = dtw * area_y;
+
+        if (flux_reg)
+        {
+            flux_reg->FineAdd(flux_x0, 0, 0, 0, NUM_STATE, scale_x);
+            flux_reg->FineAdd(flux_x1, 0, 0, 0, NUM_STATE, scale_x);
+
+            flux_reg->FineAdd(flux_y0, 1, 0, 0, NUM_STATE, scale_y);
+            flux_reg->FineAdd(flux_y1, 1, 0, 0, NUM_STATE, scale_y);
+        }
+
+        if (level < parent->finestLevel())
+        {
+            FluxRegister& fr = getFluxReg(level + 1);
+
+            // Always COPY on first call of coarse level
+            FluxRegister::FrOp op = FluxRegister::COPY;
+
+            fr.CrseInit(flux_x0, 0, 0, 0, NUM_STATE, -scale_x, op);
+            fr.CrseInit(flux_x1, 0, 0, 0, NUM_STATE, -scale_x, FluxRegister::ADD);
+
+            fr.CrseInit(flux_y0, 1, 0, 0, NUM_STATE, -scale_y, op);
+            fr.CrseInit(flux_y1, 1, 0, 0, NUM_STATE, -scale_y, FluxRegister::ADD);
         }
     }
 
-    // Final positivity enforcement on updated state
-    enforce_positivity(S_new, grids, dmap, 0, gamma);
-
     return dt;
 }
-
  
 
 /**
@@ -465,6 +510,10 @@ AmrLevelAdv::estTimeStep (Real)
 
     MultiFab U0(grids, dmap, NUM_STATE, NUM_GROW);
     FillPatch(*this, U0, NUM_GROW, cur_time, Phi_Type, 0, NUM_STATE);
+
+    // [CFL.0] Clamp on fine levels before CFL estimate
+    if (level > 0)
+        enforce_positivity(U0, grids, dmap, NUM_GROW, gamma);
 
     Real dt_est = euler2d::compute_dt_cfl_2d(U0, geom, gamma, cfl);
 
@@ -735,30 +784,43 @@ AmrLevelAdv::errorEst (amrex::TagBoxArray& tags,
         const int ilo = bx.smallEnd(0);
         const int ihi = bx.bigEnd(0);
 
-        amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
-        {
-            // Now considering x, y, angle and quadrants
-            int im = (i == ilo) ? i : i-1;
-            int ip = (i == ihi) ? i : i+1;
+        const int ptype = prob_type;
 
-            int jlo = bx.smallEnd(1);
-            int jhi = bx.bigEnd(1);
+    amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+    {
+        int im = (i == ilo) ? i : i-1;
+        int ip = (i == ihi) ? i : i+1;
 
-            int jm = (j == jlo) ? j : j-1;
-            int jp = (j == jhi) ? j : j+1;
+        int jlo = bx.smallEnd(1);
+        int jhi = bx.bigEnd(1);
 
-            Real drdx = amrex::Math::abs(s(ip,j,k,comp_rho) - s(im,j,k,comp_rho)) / ((ip-im)*dx);
-            Real drdy = amrex::Math::abs(s(i,jp,k,comp_rho) - s(i,jm,k,comp_rho)) / ((jp-jm)*geom.CellSize(1));
+        int jm = (j == jlo) ? j : j-1;
+        int jp = (j == jhi) ? j : j+1;
 
-            Real grad = std::sqrt(drdx*drdx + drdy*drdy);
+        Real drdx = amrex::Math::abs(s(ip,j,k,comp_rho) - s(im,j,k,comp_rho)) / ((ip-im)*dx);
+        Real drdy = amrex::Math::abs(s(i,jp,k,comp_rho) - s(i,jm,k,comp_rho)) / ((jp-jm)*geom.CellSize(1));
 
-            if (grad > thr) {
-                t(i,j,k) = setval;
-            }
-        });
+        Real grad;
+
+        if (ptype == 0) {
+            // x-split shock tube
+            grad = drdx;
+        } else if (ptype == 1) {
+            // y-split shock tube
+            grad = drdy;
+        } else {
+            // 2D: use full gradient magnitude
+            grad = std::sqrt(drdx*drdx + drdy*drdy);
+        }
+
+        if (grad > thr) {
+            t(i,j,k) = setval;
+        }
+    });
     }
 
-    if (level == 0 && amrex::ParallelDescriptor::IOProcessor()) {
+    if (verbose && level == 0 && amrex::ParallelDescriptor::IOProcessor())
+    {
         amrex::Print() << "[errorEst] level=" << level
                     << " thr=" << thr
                     << " time=" << state[Phi_Type].curTime()
@@ -795,7 +857,8 @@ AmrLevelAdv::read_params ()
 
     pp.query("max_rhograd_lev", max_rhograd_lev);
 
-   
+    ParmParse pprob("prob");
+    pprob.query("type", prob_type);
 
     Geometry const* gg = AMReX::top()->getDefaultGeometry();
 
@@ -821,23 +884,22 @@ AmrLevelAdv::read_params ()
 void
 AmrLevelAdv::reflux ()
 {
-    BL_ASSERT(level<parent->finestLevel());
+    BL_ASSERT(level < parent->finestLevel());
 
     const auto strt = amrex::second();
 
-    getFluxReg(level+1).Reflux(get_new_data(Phi_Type),1.0,0,0,NUM_STATE,geom);
+    getFluxReg(level+1).Reflux(get_new_data(Phi_Type), 1.0, 0, 0, NUM_STATE, geom);
 
     if (verbose)
     {
         const int IOProc = ParallelDescriptor::IOProcessorNumber();
         auto      end    = amrex::second() - strt;
-
-        ParallelDescriptor::ReduceRealMax(end,IOProc);
-
+        ParallelDescriptor::ReduceRealMax(end, IOProc);
         amrex::Print() << "AmrLevelAdv::reflux() at level " << level
                        << " : time = " << end << std::endl;
     }
 }
+
 
 void
 AmrLevelAdv::avgDown ()

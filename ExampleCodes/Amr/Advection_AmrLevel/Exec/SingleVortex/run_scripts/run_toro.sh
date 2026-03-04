@@ -12,10 +12,10 @@ CONFIGS=(
 )
 
 # No AMR Resolutions
-RESOLUTIONS=(104 208 416)
+RESOLUTIONS=(100 200 400)
 
 # Fixed Resolution for AMR study
-BASE_R=104
+BASE_R=100
 
 # Root Output Directory
 OUTROOT=../../../../../../CPP/data/one_dimensional_test
@@ -30,14 +30,21 @@ do
     OUTDIR_NO_AMR=$OUTROOT/No_AMR/$TESTNAME
     mkdir -p "$OUTDIR_NO_AMR"
 
+    rm -rf "$OUTDIR_NO_AMR"/plt*
+    rm -rf "$OUTDIR_NO_AMR"/*.txt
+    rm -rf "$OUTDIR_NO_AMR"/*.png
     for R in "${RESOLUTIONS[@]}"
     do
         echo "Running No_AMR resolution $R"
 
+      
+
         mpirun -np 1 $EXEC $INPUT \
-            amr.n_cell="$R 8" \
+            amr.n_cell="$R 4 4" \
             amr.max_level=0 \
+            amr.blocking_factor=2 \
             adv.do_reflux=0 \
+            adv.cfl=0.3 \
             amr.plot_file=$OUTDIR_NO_AMR/plt
     done
 
@@ -46,16 +53,24 @@ do
     OUTDIR_AMR=$OUTROOT/with_AMR/$TESTNAME
     mkdir -p "$OUTDIR_AMR"
 
+    rm -rf "$OUTDIR_AMR"/plt*
+    rm -rf "$OUTDIR_AMR"/*.txt
+    rm -rf "$OUTDIR_AMR"/*.png
     for ML in 0 1 2
     do
         echo "Running AMR base=$BASE_R max_level=$ML"
 
+        
+
         mpirun -np 1 $EXEC $INPUT \
-            amr.n_cell="$BASE_R 8" \
+            amr.n_cell="$BASE_R 4 4" \
             amr.max_level=$ML \
+            amr.blocking_factor=2 \
             adv.do_reflux=1 \
             amr.regrid_int=2 \
-            amr.n_error_buf=2 \
+            adv.max_rhograd_lev=$ML \
+            adv.cfl=0.2 \
+            amr.n_error_buf=4\
             amr.plot_file=$OUTDIR_AMR/plt
     done
 

@@ -55,23 +55,26 @@ namespace euler2d
     };
 
     // [3] Conversions and EoS
+    // [3.0]
     inline Primitive cons_to_prim(amrex::Real rho, amrex::Real momx, amrex::Real momy,
-                                 amrex::Real E, amrex::Real gamma)
+                                amrex::Real E, amrex::Real gamma)
     {
         Primitive W{};
-        W.rho = clamp_pos(rho);
-        W.ux  = momx / W.rho;
-        W.uy  = momy / W.rho;
 
-        const amrex::Real kinetic = 0.5_rt * (momx*momx + momy*momy) / W.rho;
-        const amrex::Real p_raw   = (gamma - 1.0_rt) * (E - kinetic);
-        W.p = clamp_pos(p_raw);
+        const amrex::Real rho_safe = clamp_pos(rho);
+
+        W.rho = rho;            
+        W.ux  = momx / rho_safe;
+        W.uy  = momy / rho_safe;
+
+        const amrex::Real kinetic = 0.5_rt * (momx*momx + momy*momy) / rho_safe;
+        W.p = (gamma - 1.0_rt) * (E - kinetic);  
 
         return W;
     }
 
     inline void prim_to_cons(const Primitive& W, amrex::Real gamma,
-                             amrex::Real& rho, amrex::Real& momx, amrex::Real& momy, amrex::Real& E)
+                            amrex::Real& rho, amrex::Real& momx, amrex::Real& momy, amrex::Real& E)
     {
         const amrex::Real rr = clamp_pos(W.rho);
         const amrex::Real pp = clamp_pos(W.p);
@@ -86,7 +89,10 @@ namespace euler2d
 
     inline amrex::Real sound_speed(const Primitive& W, amrex::Real gamma)
     {
-        return std::sqrt(gamma * clamp_pos(W.p) / clamp_pos(W.rho));
+        // For wave speeds, use floored values
+        const amrex::Real rr = clamp_pos(W.rho);
+        const amrex::Real pp = clamp_pos(W.p);
+        return std::sqrt(gamma * pp / rr);
     }
 
     // [4] Physical Fluxes
@@ -284,8 +290,11 @@ namespace euler2d
     }
 
     // [6] Spatial Operator: computes dU/dt = L(U) on valid cells
+    // [6.0] flux_x_out and flux_y_out, if non-null, receive face-centred fluxes for refluxing
     inline void compute_rhs_2d(const amrex::MultiFab& U_ng, amrex::MultiFab& rhs,
-                               const amrex::Geometry& geom, amrex::Real gamma)
+                            const amrex::Geometry& geom, amrex::Real gamma,
+                            amrex::MultiFab* flux_x_out = nullptr,
+                            amrex::MultiFab* flux_y_out = nullptr)
     {
         const auto dx = geom.CellSizeArray();
         const amrex::Real dx0 = dx[0];
@@ -330,24 +339,24 @@ namespace euler2d
                     const int iR = i;
 
                     auto WLm = cons_to_prim(U(iL-1,j,0,QRHO), U(iL-1,j,0,QMOMX), U(iL-1,j,0,QMOMY), U(iL-1,j,0,QENER), gamma);
-                    auto WL = cons_to_prim(U(iL  ,j,0,QRHO), U(iL  ,j,0,QMOMX), U(iL  ,j,0,QMOMY), U(iL  ,j,0,QENER), gamma);
+                    auto WL  = cons_to_prim(U(iL  ,j,0,QRHO), U(iL  ,j,0,QMOMX), U(iL  ,j,0,QMOMY), U(iL  ,j,0,QENER), gamma);
                     auto WLp = cons_to_prim(U(iL+1,j,0,QRHO), U(iL+1,j,0,QMOMX), U(iL+1,j,0,QMOMY), U(iL+1,j,0,QENER), gamma);
 
                     auto WRm = cons_to_prim(U(iR-1,j,0,QRHO), U(iR-1,j,0,QMOMX), U(iR-1,j,0,QMOMY), U(iR-1,j,0,QENER), gamma);
-                    auto WR = cons_to_prim(U(iR  ,j,0,QRHO), U(iR  ,j,0,QMOMX), U(iR  ,j,0,QMOMY), U(iR  ,j,0,QENER), gamma);
+                    auto WR  = cons_to_prim(U(iR  ,j,0,QRHO), U(iR  ,j,0,QMOMX), U(iR  ,j,0,QMOMY), U(iR  ,j,0,QENER), gamma);
                     auto WRp = cons_to_prim(U(iR+1,j,0,QRHO), U(iR+1,j,0,QMOMX), U(iR+1,j,0,QMOMY), U(iR+1,j,0,QENER), gamma);
 
                     Primitive dWL{};
                     dWL.rho = mc_limiter(WL.rho - WLm.rho, WLp.rho - WL.rho);
-                    dWL.ux = mc_limiter(WL.ux  - WLm.ux , WLp.ux  - WL.ux );
-                    dWL.uy = mc_limiter(WL.uy  - WLm.uy , WLp.uy  - WL.uy );
-                    dWL.p = mc_limiter(WL.p   - WLm.p  , WLp.p   - WL.p  );
+                    dWL.ux  = mc_limiter(WL.ux  - WLm.ux , WLp.ux  - WL.ux );
+                    dWL.uy  = mc_limiter(WL.uy  - WLm.uy , WLp.uy  - WL.uy );
+                    dWL.p   = mc_limiter(WL.p   - WLm.p  , WLp.p   - WL.p  );
 
                     Primitive dWR{};
                     dWR.rho = mc_limiter(WR.rho - WRm.rho, WRp.rho - WR.rho);
-                    dWR.ux = mc_limiter(WR.ux  - WRm.ux , WRp.ux  - WR.ux );
-                    dWR.uy = mc_limiter(WR.uy  - WRm.uy , WRp.uy  - WR.uy );
-                    dWR.p = mc_limiter(WR.p   - WRm.p  , WRp.p   - WR.p  );
+                    dWR.ux  = mc_limiter(WR.ux  - WRm.ux , WRp.ux  - WR.ux );
+                    dWR.uy  = mc_limiter(WR.uy  - WRm.uy , WRp.uy  - WR.uy );
+                    dWR.p   = mc_limiter(WR.p   - WRm.p  , WRp.p   - WR.p  );
 
                     Primitive WLf{ WL.rho + 0.5_rt*dWL.rho, WL.ux + 0.5_rt*dWL.ux, WL.uy + 0.5_rt*dWL.uy, WL.p + 0.5_rt*dWL.p };
                     Primitive WRf{ WR.rho - 0.5_rt*dWR.rho, WR.ux - 0.5_rt*dWR.ux, WR.uy - 0.5_rt*dWR.uy, WR.p - 0.5_rt*dWR.p };
@@ -383,15 +392,15 @@ namespace euler2d
 
                     Primitive dWL{};
                     dWL.rho = mc_limiter(WL.rho - WLm.rho, WLp.rho - WL.rho);
-                    dWL.ux = mc_limiter(WL.ux - WLm.ux, WLp.ux - WL.ux);
-                    dWL.uy = mc_limiter(WL.uy - WLm.uy, WLp.uy - WL.uy);
-                    dWL.p = mc_limiter(WL.p - WLm.p, WLp.p - WL.p);
+                    dWL.ux  = mc_limiter(WL.ux  - WLm.ux , WLp.ux  - WL.ux );
+                    dWL.uy  = mc_limiter(WL.uy  - WLm.uy , WLp.uy  - WL.uy );
+                    dWL.p   = mc_limiter(WL.p   - WLm.p  , WLp.p   - WL.p  );
 
                     Primitive dWR{};
                     dWR.rho = mc_limiter(WR.rho - WRm.rho, WRp.rho - WR.rho);
-                    dWR.ux = mc_limiter(WR.ux - WRm.ux, WRp.ux - WR.ux);
-                    dWR.uy = mc_limiter(WR.uy - WRm.uy , WRp.uy - WR.uy);
-                    dWR.p = mc_limiter(WR.p - WRm.p, WRp.p - WR.p);
+                    dWR.ux  = mc_limiter(WR.ux  - WRm.ux , WRp.ux  - WR.ux );
+                    dWR.uy  = mc_limiter(WR.uy  - WRm.uy , WRp.uy  - WR.uy );
+                    dWR.p   = mc_limiter(WR.p   - WRm.p  , WRp.p   - WR.p  );
 
                     Primitive WLf{ WL.rho + 0.5_rt*dWL.rho, WL.ux + 0.5_rt*dWL.ux, WL.uy + 0.5_rt*dWL.uy, WL.p + 0.5_rt*dWL.p };
                     Primitive WRf{ WR.rho - 0.5_rt*dWR.rho, WR.ux - 0.5_rt*dWR.ux, WR.uy - 0.5_rt*dWR.uy, WR.p - 0.5_rt*dWR.p };
@@ -424,6 +433,25 @@ namespace euler2d
                         R(i,j,0,n) = -(dF + dG);
                     }
                 }
+            }
+
+            // [6.5] Write face fluxes into output MultiFabs if provided
+            if (flux_x_out != nullptr)
+            {
+                auto Fxo = flux_x_out->array(mfi);
+                for (int j = jlo; j <= jhi; ++j)
+                    for (int i = ilo; i <= ihi + 1; ++i)
+                        for (int n = 0; n < NVAR; ++n)
+                            Fxo(i,j,0,n) = Fx_at(i - ilo, j - jlo, n);
+            }
+
+            if (flux_y_out != nullptr)
+            {
+                auto Gyo = flux_y_out->array(mfi);
+                for (int j = jlo; j <= jhi + 1; ++j)
+                    for (int i = ilo; i <= ihi; ++i)
+                        for (int n = 0; n < NVAR; ++n)
+                            Gyo(i,j,0,n) = Gy_at(i - ilo, j - jlo, n);
             }
         }
     }

@@ -245,6 +245,7 @@ protected:
     static amrex::Real  cfl;
     static int          do_reflux;
     static amrex::Real gamma;
+    static int prob_type;
 
 #ifdef AMREX_PARTICLES
     void init_particles ();

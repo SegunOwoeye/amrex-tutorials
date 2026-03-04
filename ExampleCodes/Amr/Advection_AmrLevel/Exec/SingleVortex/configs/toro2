@@ -38,8 +38,8 @@ adv.do_reflux = 0
 
 # REFINEMENT CRITERION 
 # Tags based on |grad rho| threshold 
-adv.max_rhograd_lev = 1
-adv.rho_grad        = 0.02  0.01 0.005
+adv.max_rhograd_lev = 2
+adv.rho_grad = 0.01 0.005 0.0025
 
 #  INITIAL CONDITIONS 
 # prob.type: Scenarios were created in line with the CW
