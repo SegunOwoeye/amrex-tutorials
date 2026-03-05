@@ -50,3 +50,4 @@ EB/Donut/Exec/ls_plt*
 plt*/
 *_plt/
 
+/ExampleCodes/Amr/Advection_AmrLevel/Exec/SingleVortex/pilot_timing
