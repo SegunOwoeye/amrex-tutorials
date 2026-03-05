@@ -179,12 +179,26 @@ AmrLevelAdv::variableSetUp ()
 
     int lo_bc[BL_SPACEDIM];
     int hi_bc[BL_SPACEDIM];
-    // x: outflow transmissive y: periodic
-    lo_bc[0] = BCType::foextrap;
-    hi_bc[0] = BCType::foextrap;
 
-    lo_bc[1] = BCType::int_dir;
-    hi_bc[1] = BCType::int_dir;
+    if (prob_type == 1) {
+        // y-discontinuity: periodic in x, outflow in y
+        lo_bc[0] = BCType::int_dir;
+        hi_bc[0] = BCType::int_dir;
+        lo_bc[1] = BCType::foextrap;
+        hi_bc[1] = BCType::foextrap;
+    } else if (prob_type == 0) {
+        // x-discontinuity: outflow in x, periodic in y
+        lo_bc[0] = BCType::foextrap;
+        hi_bc[0] = BCType::foextrap;
+        lo_bc[1] = BCType::int_dir;
+        hi_bc[1] = BCType::int_dir;
+    } else {
+        // oblique or quadrant: outflow everywhere
+        lo_bc[0] = BCType::foextrap;
+        hi_bc[0] = BCType::foextrap;
+        lo_bc[1] = BCType::foextrap;
+        hi_bc[1] = BCType::foextrap;
+    }
 
     BCRec bc(lo_bc, hi_bc);
 
@@ -283,6 +297,7 @@ AmrLevelAdv::initData ()
         amrex::Print() << "Done initializing the level "
                        << level << " data " << std::endl;
     }
+    enforce_positivity(S_new, grids, dmap, 0, gamma);
 }
 
 
@@ -392,6 +407,32 @@ AmrLevelAdv::advance (Real time,
                 }
     }
 
+    // [3.2] Y outflow BCs for U0
+    if (!geom.isPeriodic(1))
+    {
+        for (MFIter mfi(U0); mfi.isValid(); ++mfi)
+        {
+            const Box& vbx = mfi.validbox();
+            auto const Ua  = U0.array(mfi);
+
+            const int ilo = vbx.smallEnd(0);
+            const int ihi = vbx.bigEnd(0);
+            const int jlo = vbx.smallEnd(1);
+            const int jhi = vbx.bigEnd(1);
+
+            const bool at_lo_y = (jlo == geom.Domain().smallEnd(1));
+            const bool at_hi_y = (jhi == geom.Domain().bigEnd(1));
+
+            for (int i = ilo; i <= ihi; ++i)
+            for (int ig = 1; ig <= NUM_GROW; ++ig)
+            for (int n = 0; n < NUM_STATE; ++n)
+            {
+                if (at_lo_y) Ua(i, jlo-ig, 0, n) = Ua(i, jlo, 0, n);
+                if (at_hi_y) Ua(i, jhi+ig, 0, n) = Ua(i, jhi, 0, n);
+            }
+        }
+    }
+
     enforce_positivity(U0, grids, dmap, NUM_GROW, gamma);
 
     // [4] Stage 1: U1 = U0 + dt * L(U0)
@@ -434,6 +475,32 @@ AmrLevelAdv::advance (Real time,
                     if (at_lo_x) Ua(ilo - ig, j, 0, n) = Ua(ilo, j, 0, n);
                     if (at_hi_x) Ua(ihi + ig, j, 0, n) = Ua(ihi, j, 0, n); 
                 }
+    }
+
+    // [4.2] Y outflow BCs for U1
+    if (!geom.isPeriodic(1))
+    {
+        for (MFIter mfi(U1); mfi.isValid(); ++mfi)
+        {
+            const Box& vbx = mfi.validbox();
+            auto const Ua  = U1.array(mfi);
+
+            const int ilo = vbx.smallEnd(0);
+            const int ihi = vbx.bigEnd(0);
+            const int jlo = vbx.smallEnd(1);
+            const int jhi = vbx.bigEnd(1);
+
+            const bool at_lo_y = (jlo == geom.Domain().smallEnd(1));
+            const bool at_hi_y = (jhi == geom.Domain().bigEnd(1));
+
+            for (int i = ilo; i <= ihi; ++i)
+            for (int ig = 1; ig <= NUM_GROW; ++ig)
+            for (int n = 0; n < NUM_STATE; ++n)
+            {
+                if (at_lo_y) Ua(i, jlo-ig, 0, n) = Ua(i, jlo, 0, n);
+                if (at_hi_y) Ua(i, jhi+ig, 0, n) = Ua(i, jhi, 0, n);
+            }
+        }
     }
 
     enforce_positivity(U1, grids, dmap, NUM_GROW, gamma);
@@ -867,10 +934,6 @@ AmrLevelAdv::read_params ()
         amrex::Abort("Please set geom.coord_sys = 0");
     }
 
-    // For shock tube: require periodic in y, non-periodic in x.
-    if (!gg->isPeriodic(1)) {
-        amrex::Abort("For this setup, please set geometry.is_periodic = 0 1");
-    }
 
 #ifdef AMREX_PARTICLES
     pp.query("do_tracers", do_tracers);

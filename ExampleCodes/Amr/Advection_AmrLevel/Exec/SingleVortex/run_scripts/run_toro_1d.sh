@@ -4,11 +4,11 @@ EXEC=./main2d.gnu.MPI.ex
 
 # Config Files
 CONFIGS=(
-    configs/toro1
-    configs/toro2
-    configs/toro3
-    configs/toro4
-    configs/toro5
+    configs/toro_tests/toro1
+    configs/toro_tests/toro2
+    configs/toro_tests/toro3
+    configs/toro_tests/toro4
+    configs/toro_tests/toro5
 )
 
 # No AMR Resolutions
@@ -20,11 +20,11 @@ BASE_R=100
 # Root Output Directory
 OUTROOT=../../../../../../CPP/data/one_dimensional_test
 
-# Toro Study Do Loop
+# 1D Toro Study Do Loop
 for INPUT in "${CONFIGS[@]}"
 do
     TESTNAME=$(basename "$INPUT")
-    echo "Running test: $TESTNAME"
+    echo "Running 1D validation for $TESTNAME"
 
     # [1] NO AMR CONVERGENCE STUDY
     OUTDIR_NO_AMR=$OUTROOT/No_AMR/$TESTNAME
@@ -40,7 +40,7 @@ do
       
 
         mpirun -np 1 $EXEC $INPUT \
-            amr.n_cell="$R 4 4" \
+            amr.n_cell="$R 4 1" \
             amr.max_level=0 \
             amr.blocking_factor=2 \
             adv.do_reflux=0 \
@@ -63,14 +63,14 @@ do
         
 
         mpirun -np 1 $EXEC $INPUT \
-            amr.n_cell="$BASE_R 4 4" \
+            amr.n_cell="$BASE_R 4 1" \
             amr.max_level=$ML \
             amr.blocking_factor=2 \
             adv.do_reflux=1 \
             amr.regrid_int=2 \
             adv.max_rhograd_lev=$ML \
             adv.cfl=0.2 \
-            amr.n_error_buf=4\
+            amr.n_error_buf=4 \
             amr.plot_file=$OUTDIR_AMR/plt
     done
 
