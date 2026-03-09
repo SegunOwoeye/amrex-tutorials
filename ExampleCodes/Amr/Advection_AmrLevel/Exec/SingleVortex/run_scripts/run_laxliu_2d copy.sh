@@ -1,14 +1,4 @@
 #!/bin/bash
-#SBATCH −J oo338_AMReX_CW_Test ## Job name
-#SBATCH −−partition=csc−mphil ## The partition to run on
-#SBATCH −−time=00:10:00 ## Time for job in HH:MM:SS
-#SBATCH −−output=AMReX_oo−%A.out ## Output file − %A = Job ID
-#SBATCH −−mem=1GB ## Memory required
-#SBATCH −−ntasks=8 ## Number of processes
-#SBATCH −−mail−type=ALL ## When to email you
-#SBATCH −−account=oo338 ## Account
-#SBATCH −−clusters=CSC ## Cluster to run on
-
 
 EXEC=./main2d.gnu.MPI.ex
 INPUT=configs/lax_and_liu_tests/laxliu_2d 
