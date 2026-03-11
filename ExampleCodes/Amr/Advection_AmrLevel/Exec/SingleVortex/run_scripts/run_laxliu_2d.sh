@@ -21,7 +21,7 @@ echo "mode,resolution,amr_level,cpus,time" > $CSV
 
 
 # [1] Resolution list (doubling)
-RESOLUTIONS=(256 512 1024)
+RESOLUTIONS=(296 592 1184)
 
 # CPU scaling
 CPUS=(1 2 4 8 12 16)
@@ -57,7 +57,7 @@ done
 
 
 # [3] AMR equivalent resolution tests
-BASE_RES=256
+BASE_RES=296
 
 for LEVEL in 1 2
 do
